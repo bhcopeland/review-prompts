@@ -94,6 +94,7 @@ bugs found are fixed later in the patch series.
   - review.md (per FILE-N deep regression analysis)
   - lore.md
   - syzkaller.md (if syzbot)
+  - kernelci.md (if explicit KernelCI references)
   - fixes.md
 - **Phase 3**: Report generation - spawn report.md agent after all Phase 2 agents complete
 - Dynamic model selection: sonnet for simple changes, opus for complex
@@ -142,8 +143,13 @@ Prompt: Create review context artifacts.
 **Also read commit-message.json** and check:
 1. If the commit message or any links contain "syzbot" or "syzkaller".
    Set `is_syzkaller_commit = true` if found.
+2. If the commit message carries explicit KernelCI references: a
+   `Reported-by:` trailer with `bot@kernelci.org`, kernelci.org or
+   dashboard.kernelci.org links, or KernelCI test/build/issue ids.
+   Set `has_kernelci_refs = true` if found.
 
-This determines whether to spawn the syzkaller verification agent in Phase 2.
+This determines whether to spawn the syzkaller verification agent and
+the kernelci collector in Phase 2.
 
 **Output**:
 ```
@@ -152,6 +158,7 @@ PHASE 1 COMPLETE: Context Gathering
 FILE groups identified: <count>
 Total changes: <count>
 Syzkaller commit: <yes|no>
+KernelCI references: <yes|no>
 Git range for fix checking: <range or "none">
 
 Files:
@@ -174,12 +181,17 @@ Model selection: <sonnet|opus> (reason: <all files simple|FILE-N is complex>)
 | `lore.md` | sonnet | Check prior discussions | commit-message.json | `LORE-result.json` (always) |
 | `syzkaller.md` | opus | Verify syzbot commit claims | commit-message.json | `SYZKALLER-result.json` (always) |
 | `fixes.md` | sonnet | Find missing Fixes: tag | commit-message.json + diff | `FIXES-result.json` (always) |
+| `kernelci.md` | sonnet | Collect KernelCI CI observations (context only, never findings) | commit-message.json | `KERNELCI-result.json` (always, if agent was spawned) |
 
 *unified = opus if any change is complex, sonnet if all changes are simple
 
 - One `review.md` agent per FILE-N.
 - `lore.md` always runs (unless explicitly skipped)
 - `syzkaller.md` only if commit mentions syzbot/syzkaller.
+- `kernelci.md` only if has_kernelci_refs is true. It is optional
+  infrastructure: when the KernelCI MCP tools are not available it
+  still writes its result file, marked unavailable, and nothing else
+  changes.
 
 **Model Selection Criteria** (for `review.md` agents):
 
@@ -257,6 +269,21 @@ Prompt: Verify every claim in the commit message for this syzbot/syzkaller-repor
         is actually possible.
 ```
 
+Plus (if has_kernelci_refs is true):
+```
+Task: kernelci-collector
+Model: sonnet
+Prompt: Collect KernelCI observations for this commit.
+        Read the prompt file <prompt_dir>/agent/kernelci.md and execute
+        its review flow variant.
+
+        Context directory: ./review-context/
+        Prompt directory: <prompt_dir>
+
+        Observations only: your output provides CI context and never
+        creates review findings.
+```
+
 Plus (always):
 ```
 Task: fixes-tag-finder
@@ -274,13 +301,14 @@ multiple Task tool calls. If `--max-parallel <N>` is specified, launch agents in
 batches of at most N agents at a time:
 
 1. Collect all agents to spawn: FILE-1 through FILE-N (review),
-   plus lore (if not skipped), syzkaller (if applicable), and fixes
+   plus lore (if not skipped), syzkaller (if applicable), kernelci
+   (if applicable), and fixes
 2. Launch the first batch (up to N agents) in a single response
 3. Wait for all agents in the batch to complete
 4. Launch the next batch
 5. Repeat until all agents have completed
 
-Prioritize non-FILE agents (lore, syzkaller, fixes) in the first batch
+Prioritize non-FILE agents (lore, syzkaller, kernelci, fixes) in the first batch
 since they tend to complete faster and don't depend on FILE analysis results.
 
 Since Phase 2 agents run in the background, you MUST call `TaskOutput` with
@@ -301,6 +329,7 @@ Expected result files (one per agent):
 - Lore agent: `./review-context/LORE-result.json` (always, unless agent was skipped)
 - Syzkaller agent: `./review-context/SYZKALLER-result.json` (always, if agent was spawned)
 - Fixes agent: `./review-context/FIXES-result.json` (always, unless agent was skipped)
+- Kernelci agent: `./review-context/KERNELCI-result.json` (always, if agent was spawned)
 
 **A missing result file is an agent failure.** Do NOT treat it as "no issues
 found" — the agent may have crashed, written to the wrong path, or not run.
@@ -366,6 +395,9 @@ Fixes Tag Search:
   Fixed commit found: <yes|no>
   Suggested tag: <Fixes: line or "none">
   Status: complete | skipped | failed
+
+KernelCI Collection: (if spawned)
+  Status: complete | failed
 ```
 
 ---
@@ -454,6 +486,8 @@ Total issues found: <count>
   - Missing Fixes: tag: <yes|no>
 Highest severity: <none|low|medium|high|urgent>
 Failed agents: <agents marked failed in Phase 2, or "none">
+KernelCI observations: <the report agent's one-line summary, or
+"none" / "not applicable"; context only, not an issue count>
 
 Output files:
 - ./review-metadata.json
@@ -472,6 +506,7 @@ Output files:
 | 2 | Lore checking failed | Log warning, continue to Phase 3 |
 | 2 | Syzkaller verification failed | Log warning, continue to Phase 3 |
 | 2 | Fixes tag search failed | Log warning, continue to Phase 3 |
+| 2 | Kernelci collection failed | Log warning, continue to Phase 3 |
 | 2 | Result file missing after agent completes | Mark agent as failed, log error, continue to Phase 3 |
 | 3 | Report generation failed | Report error |
 
@@ -555,5 +590,6 @@ Analyze patch file /path/to/patch.diff
 ├── FILE-1-CHANGE-1-debug.json              (diagnostic: subsystem knowledge intersections)
 ├── LORE-result.json                         (always created by lore agent)
 ├── SYZKALLER-result.json                    (always created by syzkaller agent, if spawned)
+├── KERNELCI-result.json                     (always created by kernelci agent, if spawned)
 └── FIXES-result.json                        (always created by fixes agent)
 ```

@@ -45,6 +45,10 @@ concerns CI results, or when the crash context (platform, tree, a
 CI-tested kernel version such as a -next or stable-rc tag) suggests
 CI may have seen the same failure.
 
+In reviews the lookup runs only on explicit KernelCI references in
+the commit message, and the data is context only: it is shown
+alongside the review output and never becomes a review finding.
+
 Known limitation: the batch launcher (`scripts/agent_one.sh`) does not
 configure KernelCI. Its Claude runs only allow the semcode tools, so
 the collector is unavailable there unless your own Claude settings
