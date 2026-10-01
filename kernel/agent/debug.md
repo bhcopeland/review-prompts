@@ -41,7 +41,8 @@ You will be given:
 1. A crash report, oops, warning, stack trace, or bug description
 2. Optionally: a reproducer program
 3. Optionally: a syzbot URL
-4. The prompt directory path (contains agent/, subsystem/)
+4. Optionally: a KernelCI test, build or issue id, or a dashboard URL
+5. The prompt directory path (contains agent/, subsystem/)
 
 ---
 
@@ -96,6 +97,17 @@ Extract from the reproducer (if available):
   makes, what file paths it opens, what flags it uses. Do not trace
   these into kernel code -- that is the reproducer agent's job.
 
+Extract KernelCI references (if present):
+- Test, build or issue ids (`origin:hex`), dashboard URLs, legacy
+  `linux.kernelci.org` URLs, or a `Reported-by:` trailer with
+  `bot@kernelci.org`
+- Whether the user's request itself concerns CI results (for example
+  "boots are failing on linux-next")
+- Record them in bug.json. Do not fetch anything; querying KernelCI is
+  the kernelci agent's job.
+- KernelCI build artifacts (`build.sh`, `.config`, kernel images) are
+  not a reproducer. Never set `reproducer.available` because of them.
+
 Write bug.json (schema below), then output:
 
 ```
@@ -104,6 +116,7 @@ PHASE 1 COMPLETE: Bug context extracted
   Crash function: <function>
   Call trace depth: <N> functions
   Reproducer: <available|not available>
+  KernelCI references: <N|none>
 ```
 
 ---
@@ -119,6 +132,12 @@ If a reproducer is available, the reproducer agent will run first in
 Phase 3 and generate more targeted theories based on actual analysis of
 what the reproducer does. Those theories will typically take priority
 over these initial theories.
+
+**CI-only input**: If the input is a CI-related request without a
+crash signature (for example "boots are failing on linux-next"), you
+may record zero initial theories. Dispatch the kernelci collector
+first (see 3b) and generate theories from its observations, especially
+the failure signature it extracts.
 
 Good theories:
 - "Race between some_func() and some_other_func() on some_resource"
@@ -154,7 +173,9 @@ PHASE 2 COMPLETE: Initial theories generated
 ## Phase 3: Iterative Investigation
 
 Loop until a bug is confirmed or all theories exhausted (max 12
-dispatches):
+dispatches). A session with zero initial theories still enters the
+loop when the kernelci collector is due (see 3b), and theories formed
+from its observations drive the remaining iterations:
 
 ### 3a. Reproducer-First Analysis (MANDATORY when reproducer available)
 
@@ -190,15 +211,33 @@ for code agents to investigate.
 
 ### 3b. Select Theory and Agent Type
 
-Pick the highest-priority active theory. Determine agent type:
+Pick the highest-priority active theory and determine its agent type.
+If the kernelci collector is due and has not run yet (see below),
+dispatch it first instead, with no theory:
 
 | Agent Type | Prompt File | When to Use |
 |-----------|-------------|-------------|
 | `code` | debug-code.md | Investigate code paths, races, locking, data flow |
 | `commits` | debug-commits.md | Search git for introducing commits or existing fixes |
+| `kernelci` | kernelci.md | Collect CI observations when the bug could plausibly appear in CI (references, a CI-related request, or crash context naming a platform or CI-tested tree) |
 
 Note: The reproducer agent (debug-reproducer.md) is handled specially by
 3a and runs first when a reproducer is available. Do not select it here.
+
+The kernelci agent is dispatched at most once per session, when the
+bug could plausibly appear in CI: bug.json records KernelCI
+references or a CI-related request, or the crash context names a
+platform, board, tree or CI-tested kernel version (for example a
+-next or stable-rc tag). Do not dispatch it for bugs with no CI
+surface. Its
+prompt file is `agent/kernelci.md`, not `debug-kernelci.md`; the same
+collector will serve other flows. Dispatch it at the first
+opportunity: it does not require an active theory, so it may run
+before theory-based agents, though if a reproducer is available it
+runs only after the reproducer agent. It counts toward the 12-dispatch
+limit, its `theory_id` must be null, and its result is always
+`inconclusive`: CI observations inform theory priority but never
+confirm or eliminate a theory.
 
 **Theory prioritization**: After the reproducer agent runs, theories
 derived from its `possible_explanations` should generally take priority
@@ -220,10 +259,12 @@ general-purpose`:
 ```
 Description: debug-agent-N
 Subagent type: general-purpose
-Model: opus
+Model: opus (sonnet for the kernelci agent)
 Prompt: Debug investigation task.
-        Read the prompt file <prompt_dir>/agent/debug-<type>.md and
-        execute it.
+        Read the prompt file <prompt_dir>/agent/<prompt-file>, where
+        <prompt-file> is the Prompt File column from the 3b table for
+        this agent type (the reproducer agent of 3a uses
+        debug-reproducer.md), and execute it.
 
         Task file: ./debug-context/agent-N.json
         Bug context: ./debug-context/bug.json
@@ -273,6 +314,19 @@ especially those about external device drivers. The reproducer agent
 has identified these as potential crash causes. Do not skip them
 because they seem "less likely" than internal subsystem issues.
 
+**For kernelci agents**: Skip steps 1 and 2; there is no investigated
+theory to update, and CI observations are not code evidence. Never add
+the collector's observations (log lines, register values, addresses,
+failure counts) to any theory's evidence_for or evidence_against, not
+even reworded; code agents must re-derive such facts from source or
+logs they examined themselves. Increment
+total_dispatches and keep the `kernelci_observations` object for Phase
+4 (it is copied into final-analysis.json). Use the observations to
+adjust theory priorities or to create theories from the extracted
+failure signature, for example when CI shows the failure is
+platform-wide or predates a suspect commit, but never mark a theory
+confirmed or eliminated from CI observations alone.
+
 ### 3f. Check Termination
 
 - **Bug confirmed**: A theory has status "confirmed" with concrete code
@@ -280,6 +334,9 @@ because they seem "less likely" than internal subsystem issues.
   verification (Step 6.5). Proceed to Phase 4.
 - **All theories eliminated or inconclusive after 12 dispatches**:
   Proceed to Phase 4 with the best available analysis.
+- **No active theories and none can be formed**: Proceed to Phase 4
+  with the best available analysis; for a CI-only session this can be
+  the collector's observations alone.
 - **New theories to investigate**: Continue the loop.
 
 Output after each agent:
@@ -295,7 +352,11 @@ DISPATCH <N> COMPLETE: agent-<N> (<type>) finished
 
 ## Phase 4: Finalize and Report
 
-Write `./debug-context/final-analysis.json` (schema below).
+Write `./debug-context/final-analysis.json` (schema below). If a
+kernelci agent ran and produced a valid result, copy the
+`kernelci_observations` object from its result file into
+final-analysis.json unchanged; if the collector failed, record
+`{"collection_status": "failed"}` there instead.
 
 If a bug was confirmed:
 - Summarize the root cause
@@ -393,6 +454,14 @@ Written once in Phase 1, never modified.
     ]
   },
 
+  "kernelci": {
+    "references": [
+      {"kind": "test|build|issue|checkout|trailer|url", "value": "id, URL or trailer line"}
+    ],
+    "legacy_urls": ["linux.kernelci.org URLs, not resolvable via the MCP"],
+    "ci_related_request": false
+  },
+
   "additional_messages": ["any other kernel log messages"]
 }
 ```
@@ -486,11 +555,13 @@ on agent type:
   subsystem_guides_to_load
 - Commits agents also use: commit_search_criteria
 - Reproducer agents use: context_from_bug (plus bug.json reproducer)
+- Kernelci agents use: context_from_bug (plus the bug.json kernelci
+  block); theory_id must be null
 
 ```json
 {
   "agent_id": "agent-1",
-  "agent_type": "code|reproducer|commits",
+  "agent_type": "code|reproducer|commits|kernelci",
   "theory_id": "T1",
 
   "task_description": "Clear description of what to investigate",
@@ -532,12 +603,14 @@ on agent type:
 
 ### agent-N-result.json
 
-Written by the agent, read by the orchestrator.
+Written by the agent, read by the orchestrator. Kernelci collectors
+write the common envelope fields plus `kernelci_observations` (see
+agent/kernelci.md); the code-analysis fields are omitted.
 
 ```json
 {
   "agent_id": "agent-1",
-  "agent_type": "code|reproducer|commits",
+  "agent_type": "code|reproducer|commits|kernelci",
   "theory_id": "T1",
   "status": "confirmed|eliminated|inconclusive",
 
@@ -692,6 +765,8 @@ Written by orchestrator in Phase 4 before dispatching the report agent.
 
   "fix_suggestion": "description of how to fix the bug, or null",
 
+  "kernelci_observations": null,
+
   "theories_investigated": [
     {
       "id": "T1",
@@ -707,6 +782,11 @@ If no bug was confirmed, set `bug_confirmed` to false, `root_cause` to
 null, `suspect_commit` to null, and `fix_suggestion` to null. Populate
 `theories_investigated` with all theories and their final status.
 
+`kernelci_observations` carries the object copied verbatim from the
+kernelci agent's result when one ran (see agent/kernelci.md); it is CI
+observations only, never root-cause evidence. When no kernelci agent
+ran, leave it null.
+
 ---
 
 ## Error Handling
@@ -716,6 +796,7 @@ null, `suspect_commit` to null, and `fix_suggestion` to null. Populate
 | 1 | Cannot parse crash report | Ask user for clarification |
 | 3 | Agent fails to write result file | Log error, mark theory as inconclusive, continue |
 | 3 | Agent result is empty/malformed | Log error, mark theory as inconclusive, continue |
+| 3 | Kernelci collector fails or its result is malformed | Log error, record the collection failure, preserve theories, count the dispatch, continue |
 | 3 | Max dispatches reached | Proceed to Phase 4 with best available analysis |
 | 4 | Report agent fails | Log error, output analysis.json summary directly |
 

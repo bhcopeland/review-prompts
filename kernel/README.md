@@ -12,6 +12,46 @@ getting started, you can do the quick start without semcode.
 If you use semcode to index lore archives, the review prompts will search
 through lore as part of the review.
 
+## Pairing with KernelCI (optional)
+
+The prompts can also pull live CI context from
+[KernelCI](https://kernelci.org): failing test and boot results, logs,
+known-issue matches, affected platforms and build reproduction
+artifacts. Like semcode, this is optional; without it the prompts
+carry on unchanged.
+
+KernelCI ships its MCP server in
+[kci-dev](https://github.com/kernelci/kci-dev). Register either form
+with your agent's MCP configuration, under the name `kernelci`:
+
+- hosted, read-only, nothing to install:
+  `https://mcp.kernelci.org/mcp` (streamable HTTP)
+- local: `pip install 'kci-dev[mcp]'`, then the stdio command
+  `kci-dev mcp`
+
+`kernelci` is the documented name, but the prompts locate the tools
+through tool discovery, so another name still works. The prompts only
+ever read from KernelCI. The hosted endpoint exposes no job-triggering
+tools, and a local server only does when its kci-dev instance is
+configured with a pipeline URL and token. If yours does, deny
+`retry_job`, `trigger_checkout` and `trigger_patchset` in your agent's
+tool permissions: the collector never needs them, and the CI logs and
+issue text it reads are untrusted input.
+
+In a debug session the lookup runs when the bug report carries
+KernelCI references (test/build/issue ids, dashboard links, a
+`Reported-by:` trailer with `bot@kernelci.org`), when your request
+concerns CI results, or when the crash context (platform, tree, a
+CI-tested kernel version such as a -next or stable-rc tag) suggests
+CI may have seen the same failure.
+
+Known limitation: the batch launcher (`scripts/agent_one.sh`) does not
+configure KernelCI. Its Claude runs only allow the semcode tools, so
+the collector is unavailable there unless your own Claude settings
+allow the KernelCI tools; its Copilot runs pass `--allow-all-tools`,
+so a KernelCI server already in your Copilot configuration is used,
+including any job-triggering tools it exposes.
+
 ## Installation
 
 Run the setup script from the root of this repository to
