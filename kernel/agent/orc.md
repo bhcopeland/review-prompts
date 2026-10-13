@@ -332,6 +332,8 @@ this protocol.
 - Lore threads/comments found
 - Syzkaller claim verification results (if applicable)
 - Fixes tag search results
+- Agents spawned, and which of them were marked failed (passed to the
+  report agent in Phase 3)
 
 **Output after all Phase 2 agents processed**:
 ```
@@ -346,6 +348,7 @@ File Analysis:
   - FILE-1 (<filename>): <N> regressions
   - FILE-2 (<filename>): <N> regressions
   ...
+  (a FILE-N agent marked failed shows "failed (no result file)")
 
 Lore Checking:
   Threads found: <count>
@@ -394,6 +397,9 @@ To prevent duplicate report agents:
    spawned — do NOT retry.  Wait for `./review-metadata.json` to confirm
    it finished.
 
+Pass the agent lists tracked in Phase 2: a missing result file alone
+cannot tell the report agent whether an agent was skipped or failed.
+
 **Invoke**:
 ```
 Task: report-aggregator
@@ -404,6 +410,8 @@ Prompt: Aggregate analysis results and generate review output.
         Context directory: ./review-context/
         Prompt directory: <prompt_dir>
         Template: <prompt_dir>/inline-template.md
+        Agents spawned: <Phase 2 agents spawned, e.g. FILE-1, FILE-2, lore, fixes>
+        Agents failed: <spawned agents marked failed, or "none">
 ```
 
 **Verify after completion**:
@@ -445,6 +453,7 @@ Total issues found: <count>
   - Syzkaller false claims: <count> (if applicable)
   - Missing Fixes: tag: <yes|no>
 Highest severity: <none|low|medium|high|urgent>
+Failed agents: <agents marked failed in Phase 2, or "none">
 
 Output files:
 - ./review-metadata.json

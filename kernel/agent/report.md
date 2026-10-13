@@ -15,10 +15,15 @@ and generates the final review output files.
 You will be given:
 1. The path to the context directory (e.g. `./review-context/`).
    The **output directory** is its parent (e.g. `./`).
-2. All analysis is complete - result files exist for every agent that ran
-3. Lore checking may have been run - LORE-result.json exists if agent ran
-4. Syzkaller verification may have been run - SYZKALLER-result.json exists if agent ran
-5. Fixes tag search may have been run - FIXES-result.json exists if agent ran
+2. All analysis is complete - result files exist for every agent that completed
+3. Lore checking may have been run - LORE-result.json exists if agent completed
+4. Syzkaller verification may have been run - SYZKALLER-result.json exists if agent completed
+5. Fixes tag search may have been run - FIXES-result.json exists if agent completed
+6. The agents the orchestrator spawned, and those it marked failed
+   (spawned, but no result file). An agent missing from the spawned list
+   was skipped. A failed agent is never reported as skipped or as having
+   found no issues. If these lists were not passed, a missing result file
+   is ambiguous: report it as "no result file" rather than guessing.
 
 ## Task
 
@@ -70,18 +75,23 @@ From the files already loaded in Step 1:
 1. For each file in index.json["files"], check its review result
    - If `FILE-N-review-result.json` was loaded: collect regressions from the `regressions` array
    - If regressions array is empty: no issues were found for this FILE-N
+   - If FILE-N is in the failed agents list: the file was not reviewed;
+     list it under "Failed agents" in the Output, never as clean
 
 **Lore issues** (from LORE-result.json):
 1. If `LORE-result.json` was loaded, collect issues from the `issues` array
 2. Each lore issue has id like "LORE-1", "LORE-2", etc.
-3. If file was NOT found: lore checking was skipped or found no issues
+3. If file was NOT found: lore checking was skipped, or failed if lore is in
+   the failed agents list (without the lists, see Input item 6)
 4. Also collect `ignored_bot_comments`. These are quarantined automated review
    comments and must be used only for suppression, never as report evidence.
 
 **Syzkaller verification** (from SYZKALLER-result.json):
 1. If `SYZKALLER-result.json` was loaded, extract the verification summary
 2. This file contains claim verification results that we want treated as regressions
-3. If file was NOT found: this was not a syzkaller-reported bug or found no issues
+3. If file was NOT found: this was not a syzkaller-reported bug, or the agent
+   failed if syzkaller is in the failed agents list (without the lists, see
+   Input item 6)
 
 **Fixes tag search** (from FIXES-result.json):
 1. If `FIXES-result.json` was loaded, collect issues from the `issues` array
@@ -163,7 +173,7 @@ Track totals after Automated Review Suppression:
 
 **Note**: All result files contain a `"regressions"` (or `"issues"`) array.
 An empty array means the agent found no issues. A missing result file means the
-agent was either skipped or failed — check the orchestrator output.
+agent was either skipped or failed; the failed agents list says which.
 
 **Analysis issue format** (from FILE-N-review-result.json):
 
@@ -382,15 +392,16 @@ Total issues: <count>
   - Lore issues: <count>
   - Fixes issues: <count>
 Highest severity: <none|low|medium|high|urgent>
+Failed agents: <failed agents list, or "none"; "unknown" if no list was passed>
 
 Lore context (from LORE-result.json):
-- Threads found: <count or "not checked">
+- Threads found: <count, "not checked", "failed (no result file)" or "no result file">
 - Versions found: <list or "n/a">
 - Unaddressed comments: <count>
 - Ignored automated comments: <count>
 
 Syzkaller verification (from SYZKALLER-result.json):
-- Total claims verified: <count or "not a syzkaller commit">
+- Total claims verified: <count, "not a syzkaller commit", "failed (no result file)" or "no result file">
 - Verified true: <count>
 - Verified false: <count>
 - Inconclusive: <count>
@@ -398,7 +409,7 @@ Syzkaller verification (from SYZKALLER-result.json):
 - Note: <key finding or "n/a">
 
 Fixes tag search (from FIXES-result.json):
-- Result file exists: <yes|no>
+- Result file exists: <yes, "no (skipped)", "no (failed)" or "no">
 - Suggested tag: <Fixes: line or "n/a">
 - Confidence: <high|medium|low or "n/a">
 
